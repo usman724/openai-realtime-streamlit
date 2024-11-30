@@ -3,7 +3,6 @@ import base64
 import json
 import threading
 from asyncio import run_coroutine_threadsafe
-from datetime import datetime
 
 import numpy as np
 import sounddevice as sd
@@ -14,6 +13,9 @@ from constants import (AUTOSCROLL_SCRIPT, DOCS,
 from utils import SimpleRealtime
 from audio import StreamingAudioRecorder
 
+# function calling
+from tools import get_current_time
+
 st.set_page_config(layout="wide")
 
 audio_buffer = np.array([], dtype=np.int16)
@@ -22,15 +24,6 @@ buffer_lock = threading.Lock()
 
 if "audio_stream_started" not in st.session_state:
     st.session_state.audio_stream_started = False
-
-
-def get_current_time(args=None):
-    """Function to get current time that will be called by the agent"""
-    current_time = datetime.now()
-    return {
-        "time": current_time.strftime("%H:%M:%S"),
-        "date": current_time.strftime("%Y-%m-%d")
-    }
 
 
 def audio_buffer_cb(pcm_audio_chunk):
