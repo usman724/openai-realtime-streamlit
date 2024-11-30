@@ -3,6 +3,7 @@ import base64
 import json
 import threading
 from asyncio import run_coroutine_threadsafe
+from datetime import datetime
 
 import numpy as np
 import sounddevice as sd
@@ -12,7 +13,6 @@ from constants import (AUTOSCROLL_SCRIPT, DOCS,
                        HIDE_STREAMLIT_RUNNING_MAN_SCRIPT, OAI_LOGO_URL)
 from utils import SimpleRealtime, StreamingAudioRecorder
 
-
 st.set_page_config(layout="wide")
 
 audio_buffer = np.array([], dtype=np.int16)
@@ -21,6 +21,16 @@ buffer_lock = threading.Lock()
 
 if "audio_stream_started" not in st.session_state:
     st.session_state.audio_stream_started = False
+
+
+def get_current_time(args=None):
+    """Function to get current time that will be called by the agent"""
+    current_time = datetime.now()
+    return {
+        "time": current_time.strftime("%H:%M:%S"),
+        "date": current_time.strftime("%Y-%m-%d")
+    }
+
 
 def audio_buffer_cb(pcm_audio_chunk):
     """
@@ -59,15 +69,13 @@ def start_audio_stream():
 def create_loop():
     """
     Creates an event loop we can globally cache and then run in a
-    separate thread.  Many, many thanks to
-    https://handmadesoftware.medium.com/streamlit-asyncio-and-mongodb-f85f77aea825
-    for this tip.  NOTE: globally cached resources are shared across all users
-    and sessions, so this is only okay for a local R&D app like this.
+    separate thread.
     """
     loop = asyncio.new_event_loop()
     thread = threading.Thread(target=loop.run_forever)
     thread.start()
     return loop, thread
+
 
 st.session_state.event_loop, worker_thread = create_loop()
 
@@ -83,19 +91,23 @@ def run_async(coroutine):
 @st.cache_resource(show_spinner=False)
 def setup_client():
     """
-    Globally cached SimpleRealtime client.
+    Globally cached SimpleRealtime client with time function tool added.
     """
     if client := st.session_state.get("client"):
         return client
-    return SimpleRealtime(event_loop=st.session_state.event_loop, audio_buffer_cb=audio_buffer_cb, debug=True)
+    client = SimpleRealtime(event_loop=st.session_state.event_loop, audio_buffer_cb=audio_buffer_cb, debug=True)
+
+    client.add_tool(get_current_time)
+
+    return client
+
 
 st.session_state.client = setup_client()
 
-
 if "recorder" not in st.session_state:
-       st.session_state.recorder = StreamingAudioRecorder()
+    st.session_state.recorder = StreamingAudioRecorder()
 if "recording" not in st.session_state:
-       st.session_state.recording = False
+    st.session_state.recording = False
 
 
 def toggle_recording():
@@ -116,7 +128,7 @@ def logs_text_area():
     if st.session_state.show_full_events:
         for _, _, log in logs:
             st.json(log, expanded=False)
-    else: 
+    else:
         for time, event_type, log in logs:
             if event_type == "server":
                 st.write(f"{time}\t:green[↓ server] {json.loads(log)['type']}")
@@ -180,7 +192,8 @@ def st_app():
         button_text = "Stop Recording" if st.session_state.recording else "Send Audio"
         st.button(button_text, on_click=toggle_recording, type="primary")
 
-        _ = st.text_area("Enter your message:", key = "input_text_area", height=200)
+        _ = st.text_area("Enter your message:", key="input_text_area", height=200)
+
         def clear_input_cb():
             """
             Callback that will clear our message input box after the user
