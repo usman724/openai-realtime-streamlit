@@ -11,7 +11,8 @@ import streamlit as st
 
 from constants import (AUTOSCROLL_SCRIPT, DOCS,
                        HIDE_STREAMLIT_RUNNING_MAN_SCRIPT, OAI_LOGO_URL)
-from utils import SimpleRealtime, StreamingAudioRecorder
+from utils import SimpleRealtime
+from audio import StreamingAudioRecorder
 
 st.set_page_config(layout="wide")
 
@@ -97,7 +98,10 @@ def setup_client():
         return client
     client = SimpleRealtime(event_loop=st.session_state.event_loop, audio_buffer_cb=audio_buffer_cb, debug=True)
 
-    client.add_tool(get_current_time)
+    # Add the time function tool
+    client.add_tool(
+        get_current_time
+    )
 
     return client
 
