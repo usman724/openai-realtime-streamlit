@@ -28,9 +28,36 @@ class DeepgramRealtime:
         self._parent = self
 
     def log_event(self, dev_type, event_data):
-        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        current_time = datetime.now().strftime('%H:%M:%S')
         event_payload = json.dumps(event_data)
         self.logs.append((current_time, dev_type, event_payload))
+        if self.debug:
+            print(f"{current_time} - {dev_type}: {event_payload}")
+
+    def on_message(self, socket, result):
+        sentence = result.channel.alternatives[0].transcript
+        if len(sentence) == 0:
+            return
+        if result.is_final:
+            self._parent.is_finals.append(sentence)
+            if result.speech_final:
+                utterance = " ".join(self._parent.is_finals)
+                self._parent.transcript += utterance + "\n"
+                self._parent.is_finals = []
+                self._parent.log_event("server", {
+                    "type": "transcript_final", 
+                    "text": utterance
+                })
+            else:
+                self._parent.log_event("server", {
+                    "type": "transcript_interim_final", 
+                    "text": sentence
+                })
+        else:
+            self._parent.log_event("server", {
+                "type": "transcript_interim", 
+                "text": sentence
+            })
         
     async def connect(self, language='en-US', model='nova-2'):
         if self.is_connected():

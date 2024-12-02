@@ -149,21 +149,23 @@ def audio_recorder():
             st.session_state.recording = False
             st.session_state.recorder.stop_recording()
 
-
 @st.fragment(run_every=1)
 def logs_text_area():
     logs = st.session_state.client.logs
     if st.session_state.show_full_events:
-        for _, _, log in logs:
-            st.json(log, expanded=False)
+        for time, event_type, log in logs:
+            log_data = json.loads(log)
+            if 'text' in log_data:
+                st.markdown(f"**{time}** ({event_type}): {log_data['text']}")
+            else:
+                st.json(log_data)
     else:
         for time, event_type, log in logs:
+            log_data = json.loads(log)
             if event_type == "server":
-                st.write(f"{time}\t:green[↓ server] {json.loads(log)['type']}")
+                st.markdown(f"**{time}** :green[↓] {log_data.get('text', log_data['type'])}")
             else:
-                st.write(f"{time}\t:blue[↑ client] {json.loads(log)['type']}")
-    st.components.v1.html(AUTOSCROLL_SCRIPT, height=0)
-
+                st.markdown(f"**{time}** :blue[↑] {log_data['type']}")
 @st.fragment(run_every=1)
 def response_area():
     st.markdown("**conversation**")
@@ -237,11 +239,36 @@ def st_app():
         # Show full events checkbox
         st.session_state.show_full_events = st.checkbox("Show Full Event Payloads", value=False)
 
+        # Recording controls
+        col1, col2 = st.columns([2, 2])
+        with col1:
+            if not st.session_state.recording:
+                if st.button("🎤 Start Recording", type="primary"):
+                    if st.session_state.connection_status == "connected":
+                        st.session_state.recording = True
+                        st.session_state.recorder.start_recording()
+                        # st.experimental_rerun()
+                    else:
+                        st.error("Please connect to Deepgram first")
+            else:
+                if st.button("⏹️ Stop Recording", type="primary"):
+                    st.session_state.recording = False
+                    st.session_state.recorder.stop_recording()
+                    if st.session_state.client.is_connected():
+                        st.session_state.client.send("input_audio_buffer.commit")
+                    # st.experimental_rerun()
+
+        with col2:
+            if st.session_state.recording:
+                st.markdown("🔴 Recording in progress...")
+
         # Logs container
+        st.subheader("Logs")
         with st.container(height=300, key="logs_container"):
             logs_text_area()
 
         # Response container
+        st.subheader("Transcription")
         with st.container(height=300, key="response_container"):
             response_area()
 

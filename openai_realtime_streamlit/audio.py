@@ -1,6 +1,8 @@
 import queue
 import sounddevice as sd
 import os  # <<-- Add this line
+import numpy as np
+
 from datetime import datetime
 
 class StreamingAudioRecorder:
