@@ -2,279 +2,149 @@ import asyncio
 import base64
 import json
 import numpy as np
+import atexit
 import os
+import traceback
 import tzlocal
 from datetime import datetime
-from inspect import signature, Parameter
-from typing import Dict, Any, List, Optional
+from deepgram import DeepgramClient, LiveTranscriptionEvents, LiveOptions, DeepgramClientOptions
 
-import websockets
+# # assuming that st has been imported above
+# if "connection_status" not in st.session_state:
+#     st.session_state.connection_status = "disconnected"
 
-
-class SimpleRealtime:
+class DeepgramRealtime:
     def __init__(self, event_loop=None, audio_buffer_cb=None, debug=False):
-        self.url = 'wss://api.openai.com/v1/realtime'
         self.debug = debug
         self.event_loop = event_loop
         self.logs = []
         self.transcript = ""
-        self.ws = None
-        self._message_handler_task = None
+        self.connection = None
         self.audio_buffer_cb = audio_buffer_cb
-        self.tools = {}  # Added for tool support
+        self.tools = {}
+        config = DeepgramClientOptions(options={"keepalive": "60"})
+        self.dg_client = DeepgramClient(config=config)
+        self.is_finals = []
+        self._parent = self
 
-    def _function_to_schema(self, func: callable) -> Dict[str, Any]:
-        """
-        Converts a function into a schema suitable for the Realtime API's tool format.
-        """
-        type_map = {
-            str: "string",
-            int: "integer",
-            float: "number",
-            bool: "boolean",
-            list: "array",
-            dict: "object",
-            type(None): "null",
-        }
-
-        sig = signature(func)
-        parameters = {}
-        required = []
-
-        for name, param in sig.parameters.items():
-            if name == 'args':  # Skip *args
-                continue
-
-            param_type = type_map.get(param.annotation, "string")
-            param_info = {"type": param_type}
-
-            # Add description from type hints if available
-            if param.annotation.__doc__:
-                param_info["description"] = param.annotation.__doc__.strip()
-
-            parameters[name] = param_info
-
-            if param.default == Parameter.empty:
-                required.append(name)
-
-        return {
-            "name": func.__name__,
-            "description": (func.__doc__ or "").strip(),
-            "parameters": {
-                "type": "object",
-                "properties": parameters,
-                "required": required
-            }
-        }
-
-    def add_tool(self, func_or_definition: Any, handler: Optional[callable] = None) -> bool:
-        """
-        Add a tool that can be called by the assistant.
-        Can be called with either:
-        1. add_tool(function) - automatically generates schema from function
-        2. add_tool(definition, handler) - manual schema definition and handler
-        """
-        if handler is None:
-            # Called with just a function - generate schema automatically
-            if not callable(func_or_definition):
-                raise ValueError("When called with one argument, it must be a callable")
-            handler = func_or_definition
-            definition = self._function_to_schema(func_or_definition)
-        else:
-            # Called with definition and handler
-            definition = func_or_definition
-            if not definition.get('name'):
-                raise ValueError("Missing tool name in definition")
-            if not callable(handler):
-                raise ValueError(f"Tool '{definition['name']}' handler must be a function")
-
-        name = definition['name']
-        if name in self.tools:
-            raise ValueError(f"Tool '{name}' already added")
-
-        self.tools[name] = {'definition': definition, 'handler': handler}
-
-        # Update session with new tool if connected
+    def log_event(self, dev_type, event_data):
+        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        event_payload = json.dumps(event_data)
+        self.logs.append((current_time, dev_type, event_payload))
+        
+    async def connect(self, language='en-US', model='nova-2'):
         if self.is_connected():
-            self.send("session.update", {
-                "session": {
-                    "tools": [
-                        {**tool['definition'], 'type': 'function'}
-                        for tool in self.tools.values()
-                    ],
-                    "tool_choice": "auto"
-                }
-            })
-        return True
+            print("Already connected")
+            return False
 
-    def add_tools(self, functions: List[callable]) -> bool:
-        """
-        Add multiple functions as tools at once, automatically generating schemas.
-        """
-        for func in functions:
-            self.add_tool(func)
-        return True
+        try:
+            print("Attempting to connect...")
+            options = LiveOptions(
+                model=model,
+                language=language,
+                smart_format=True,
+                encoding="linear16",
+                channels=1,
+                sample_rate=24000,
+                interim_results=True,
+                utterance_end_ms="1000",
+                vad_events=True,
+                endpointing=300
+            )
+
+            self.connection = self.dg_client.listen.live.v("1")
+        
+            def on_open(socket, data):
+                print("Connection Open")
+                self._parent.log_event("server", {"type": "connection_open"})
+
+            def on_message(socket, result):
+                sentence = result.channel.alternatives[0].transcript
+                if len(sentence) == 0:
+                    return
+                if result.is_final:
+                    self._parent.is_finals.append(sentence)
+                    if result.speech_final:
+                        utterance = " ".join(self._parent.is_finals)
+                        self._parent.transcript += utterance + " "
+                        self._parent.is_finals = []
+                        self._parent.log_event("server", {"type": "transcript_final", "text": utterance})
+                    else:
+                        self._parent.log_event("server", {"type": "transcript_interim_final", "text": sentence})
+                else:
+                    self._parent.log_event("server", {"type": "transcript_interim", "text": sentence})
+
+            def on_error(socket, error):
+                print(f"Server error: {error}")
+                self._parent.log_event("server", {"type": "error", "error": str(error)})
+
+            def on_close(socket, close):
+                print("Connection Closed")
+                self._parent.log_event("server", {"type": "connection_closed"})
+                
+            # Add event handlers
+            self.connection.on(LiveTranscriptionEvents.Open, on_open)
+            self.connection.on(LiveTranscriptionEvents.Transcript, on_message)
+            self.connection.on(LiveTranscriptionEvents.Error, on_error)
+            self.connection.on(LiveTranscriptionEvents.Close, on_close)
+
+            # Start connection
+            if not self.connection.start(options):
+                raise Exception("Failed to start Deepgram connection")
+
+            return True
+
+        except Exception as e:
+            print(f"Connection error: {e}")
+            self.connection = None
+            return False
 
     def is_connected(self):
-        return self.ws is not None #and self.ws.open
+        return self.connection is not None and hasattr(self.connection, 'websocket')
 
-    def log_event(self, event_type, event):
-        if self.debug:
-            local_timezone = tzlocal.get_localzone()
-            now = datetime.now(local_timezone).strftime("%H:%M:%S")
-            msg = json.dumps(event)
-            self.logs.append((now, event_type, msg))
-        return True
+def send(self, event_name, data=None):
+    if not self.is_connected():
+        print("Not connected to Deepgram")
+        return False
 
+    try:
+        if event_name == "input_audio_buffer.append" and "audio" in data:
+            audio_chunk = base64.b64decode(data["audio"])
+            if self.connection:
+                print(f"Sending audio chunk of size: {len(audio_chunk)}")
+                self.connection.send(audio_chunk)
+                self.log_event("client", {
+                    "type": "audio_sent", 
+                    "size": len(audio_chunk)
+                })
+                return True
+        elif event_name == "input_audio_buffer.commit":
+            if self.connection:
+                print("Committing audio buffer")
+                self.connection.finish()
+                self.log_event("client", {"type": "audio_commit"})
+                return True
+        else:
+            event = {"type": event_name, **(data or {})}
+            self.log_event("client", event)
+            return True
+    except Exception as e:
+        print(f"Error sending data: {e}")
+        traceback.print_exc()
+        return False
 
-    async def connect(self, model="gpt-4o-realtime-preview-2024-10-01"):
-        if self.is_connected():
-            raise Exception("Already connected")
-
-        headers = {
-            "Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}",
-            "OpenAI-Beta": "realtime=v1"
-        }
-
-        self.ws = await websockets.connect(f"{self.url}?model={model}", additional_headers=headers)
-
-        # Start the message handler in the same loop as the websocket
-        self._message_handler_task = self.event_loop.create_task(self._message_handler())
-
-        # Send initial session configuration with tools
-        if self.tools:
-            use_tools = [
-                {**tool['definition'], 'type': 'function'}
-                for tool in self.tools.values()
-            ]
-            await self.ws.send(json.dumps({
-                "type": "session.update",
-                "session": {
-                    "tools": use_tools,
-                    "tool_choice": "auto"
-                }
-            }))
-
-        return True
-
-    async def _message_handler(self):
+def disconnect(self):
+    if self.connection:
         try:
-            while True:
-                if not self.ws:
-                    await asyncio.sleep(0.05)
-                    continue
-
-                try:
-                    message = await asyncio.wait_for(self.ws.recv(), timeout=0.05)
-                    data = json.loads(message)
-                    await self.receive(data)  # Changed to await
-                except asyncio.TimeoutError:
-                    continue
-                except websockets.exceptions.ConnectionClosed:
-                    break
+            self.connection.finish()
         except Exception as e:
-            print(f"Message handler error: {e}")
-            await self.disconnect()
+            print(f"Error disconnecting: {e}")
+        finally:
+            self.connection = None
+    return True
 
-    async def disconnect(self):
-        if self.ws:
-            await self.ws.close()
-            self.ws = None
-        if self._message_handler_task:
-            self._message_handler_task.cancel()
-            try:
-                await self._message_handler_task
-            except asyncio.CancelledError:
-                pass
-        self._message_handler_task = None
-        return True
+def cleanup():
+    if hasattr(st.session_state, 'client') and st.session_state.client:
+        st.session_state.client.disconnect()
 
-    async def handle_function_call(self, event):
-        """Handle function calls from the assistant"""
-        try:
-            name = event.get('name')
-            if name not in self.tools:
-                print(f"Unknown tool: {name}")
-                return
-
-            call_id = event.get('call_id')
-            arguments = json.loads(event.get('arguments', '{}'))
-            tool = self.tools[name]
-
-            # Execute the function
-            result = await tool['handler'](arguments) if asyncio.iscoroutinefunction(tool['handler']) else tool[
-                'handler'](arguments)
-
-            # Send function output back
-            await self.ws.send(json.dumps({
-                "type": "conversation.item.create",
-                "item": {
-                    "type": "function_call_output",
-                    "call_id": call_id,
-                    "output": json.dumps(result)
-                }
-            }))
-
-            # Request a new response
-            await self.ws.send(json.dumps({
-                "type": "response.create"
-            }))
-
-        except Exception as e:
-            print(f"Error handling function call: {e}")
-            if call_id:
-                # Send error as function output
-                await self.ws.send(json.dumps({
-                    "type": "conversation.item.create",
-                    "item": {
-                        "type": "function_call_output",
-                        "call_id": call_id,
-                        "output": json.dumps({"error": str(e)})
-                    }
-                }))
-
-    def handle_audio(self, event):
-        if event.get("type") == "response.audio_transcript.delta":
-            self.transcript += event.get("delta")
-
-        if event.get("type") == "response.audio.delta" and self.audio_buffer_cb:
-            b64_audio_chunk = event.get("delta")
-            decoded_audio_chunk = base64.b64decode(b64_audio_chunk)
-            pcm_audio_chunk = np.frombuffer(decoded_audio_chunk, dtype=np.int16)
-            self.audio_buffer_cb(pcm_audio_chunk)
-
-    async def receive(self, event):
-        self.log_event("server", event)
-
-        event_type = event.get("type", "")
-
-        # Handle function calls
-        if event_type == "response.function_call_arguments.done":
-            await self.handle_function_call(event)
-
-        # Handle audio responses
-        elif "response.audio" in event_type:
-            self.handle_audio(event)
-
-        return True
-
-    def send(self, event_name, data=None):
-        if not self.is_connected():
-            raise Exception("RealtimeAPI is not connected")
-
-        data = data or {}
-        if not isinstance(data, dict):
-            raise ValueError("data must be a dictionary")
-
-        event = {
-            "type": event_name,
-            **data
-        }
-
-        self.log_event("client", event)
-
-        self.event_loop.create_task(self.ws.send(json.dumps(event)))
-
-        return True
-
-
+atexit.register(cleanup)
