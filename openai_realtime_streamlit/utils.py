@@ -102,49 +102,49 @@ class DeepgramRealtime:
     def is_connected(self):
         return self.connection is not None and hasattr(self.connection, 'websocket')
 
-def send(self, event_name, data=None):
-    if not self.is_connected():
-        print("Not connected to Deepgram")
-        return False
+    def send(self, event_name, data=None):
+        if not self.is_connected():
+            print("Not connected to Deepgram")
+            return False
 
-    try:
-        if event_name == "input_audio_buffer.append" and "audio" in data:
-            audio_chunk = base64.b64decode(data["audio"])
-            if self.connection:
-                print(f"Sending audio chunk of size: {len(audio_chunk)}")
-                self.connection.send(audio_chunk)
-                self.log_event("client", {
-                    "type": "audio_sent", 
-                    "size": len(audio_chunk)
-                })
-                return True
-        elif event_name == "input_audio_buffer.commit":
-            if self.connection:
-                print("Committing audio buffer")
-                self.connection.finish()
-                self.log_event("client", {"type": "audio_commit"})
-                return True
-        else:
-            event = {"type": event_name, **(data or {})}
-            self.log_event("client", event)
-            return True
-    except Exception as e:
-        print(f"Error sending data: {e}")
-        traceback.print_exc()
-        return False
-
-def disconnect(self):
-    if self.connection:
         try:
-            self.connection.finish()
+            if event_name == "input_audio_buffer.append" and "audio" in data:
+                audio_chunk = base64.b64decode(data["audio"])
+                if self.connection:
+                    print(f"Sending audio chunk of size: {len(audio_chunk)}")
+                    self.connection.send(audio_chunk)
+                    self.log_event("client", {
+                        "type": "audio_sent", 
+                        "size": len(audio_chunk)
+                    })
+                    return True
+            elif event_name == "input_audio_buffer.commit":
+                if self.connection:
+                    print("Committing audio buffer")
+                    self.connection.finish()
+                    self.log_event("client", {"type": "audio_commit"})
+                    return True
+            else:
+                event = {"type": event_name, **(data or {})}
+                self.log_event("client", event)
+                return True
         except Exception as e:
-            print(f"Error disconnecting: {e}")
-        finally:
-            self.connection = None
-    return True
+            print(f"Error sending data: {e}")
+            traceback.print_exc()
+            return False
 
-def cleanup():
-    if hasattr(st.session_state, 'client') and st.session_state.client:
-        st.session_state.client.disconnect()
+    def disconnect(self):
+        if self.connection:
+            try:
+                self.connection.finish()
+            except Exception as e:
+                print(f"Error disconnecting: {e}")
+            finally:
+                self.connection = None
+        return True
 
-atexit.register(cleanup)
+    def cleanup():
+        if hasattr(st.session_state, 'client') and st.session_state.client:
+            st.session_state.client.disconnect()
+
+    atexit.register(cleanup)

@@ -234,6 +234,46 @@ def st_app():
     with main_tab:
         st.markdown(f"<img src='{OAI_LOGO_URL}' width='30px'/>   **Deepgram Real-time Console**", unsafe_allow_html=True)
 
+        # Show full events checkbox
+        st.session_state.show_full_events = st.checkbox("Show Full Event Payloads", value=False)
+
+        # Logs container
+        with st.container(height=300, key="logs_container"):
+            logs_text_area()
+
+        # Response container
+        with st.container(height=300, key="response_container"):
+            response_area()
+
+        # Recording button
+        button_text = "Stop Recording" if st.session_state.recording else "Send Audio"
+        st.button(button_text, on_click=toggle_recording, type="primary")
+
+        # Text input area
+        _ = st.text_area("Enter your message:", key="input_text_area", height=200)
+        
+        def clear_input_cb():
+            st.session_state.last_input = st.session_state.input_text_area
+            st.session_state.input_text_area = ""
+
+        if st.button("Send", on_click=clear_input_cb, type="primary"):
+            if st.session_state.get("last_input"):
+                try:
+                    event = json.loads(st.session_state.get("last_input"))
+                    with st.spinner("Sending message..."):
+                        event_type = event.pop("type")
+                        st.session_state.client.send(event_type, event)
+                    st.success("Message sent successfully")
+                except json.JSONDecodeError:
+                    st.error("Invalid JSON input. Please check your message format.")
+                except Exception as e:
+                    st.error(f"Error sending message: {str(e)}")
+            else:
+                st.warning("Please enter a message before sending.")
+
+    with docs_tab:
+        st.markdown(DOCS)
+
     with st.sidebar:
         col1, col2 = st.columns([3, 1])
         with col1:
@@ -258,8 +298,12 @@ def st_app():
                     st.error(f"Error disconnecting: {str(e)}")
             else:
                 # Connect logic
-                    connect_to_deepgram()  # This is how you force a rerun of the block
-            
+                connect_to_deepgram()  # This is how you force a rerun of the block
+
+    # Add these at the end to ensure audio functionality
+    audio_player()
+    audio_recorder()
+         
 # Add these helper functions if not already present
 def add_debug_message(message):
     print(message)  # Console logging
